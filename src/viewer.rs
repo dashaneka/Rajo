@@ -40,7 +40,10 @@ struct State {
     /// When true, zoom is picked so the image fits the window.
     fit: bool,
     fitted_window: bool,
+    /// Blocks zoom→resize→scroll→zoom recursion.
+    busy: bool,
     over_controls: bool,
+    drag_start: Option<(f64, f64)>,
     hide_source: Option<glib::SourceId>,
     key_controller: Option<gtk::EventControllerKey>,
     fullscreen_handler: Option<glib::SignalHandlerId>,
@@ -135,7 +138,9 @@ impl Viewer {
                 zoom: 1.0,
                 fit: true,
                 fitted_window: false,
+                busy: false,
                 over_controls: false,
+                drag_start: None,
                 hide_source: None,
                 key_controller: None,
                 fullscreen_handler: None,
@@ -211,21 +216,57 @@ impl Viewer {
         self.window.add_controller(keys.clone());
         self.state.borrow_mut().key_controller = Some(keys);
 
+        // Ctrl+scroll zooms; plain scroll is left to the scrolled window to pan.
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = self.this.clone();
-        scroll.connect_scroll(move |_, _, dy| {
-            if let Some(viewer) = this.upgrade() {
-                if dy < 0.0 {
-                    viewer.zoom_by(ZOOM_STEP);
-                } else if dy > 0.0 {
-                    viewer.zoom_by(1.0 / ZOOM_STEP);
-                }
-                glib::Propagation::Stop
+        scroll.connect_scroll(move |controller, _, dy| {
+            let Some(viewer) = this.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let ctrl = controller
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK);
+            if !ctrl || dy == 0.0 || viewer.state.borrow().busy {
+                return glib::Propagation::Proceed;
+            }
+            if dy < 0.0 {
+                viewer.zoom_by(ZOOM_STEP);
             } else {
-                glib::Propagation::Proceed
+                viewer.zoom_by(1.0 / ZOOM_STEP);
+            }
+            glib::Propagation::Stop
+        });
+        self.overlay.add_controller(scroll);
+
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
+        let this = self.this.clone();
+        drag.connect_drag_begin(move |_, _, _| {
+            if let Some(viewer) = this.upgrade() {
+                let hadj = viewer.scrolled.hadjustment().value();
+                let vadj = viewer.scrolled.vadjustment().value();
+                viewer.state.borrow_mut().drag_start = Some((hadj, vadj));
+                viewer.show_controls();
             }
         });
-        self.scrolled.add_controller(scroll);
+        let this = self.this.clone();
+        drag.connect_drag_update(move |_, dx, dy| {
+            if let Some(viewer) = this.upgrade() {
+                let Some((hx, vy)) = viewer.state.borrow().drag_start else {
+                    return;
+                };
+                viewer.scrolled.hadjustment().set_value(hx - dx);
+                viewer.scrolled.vadjustment().set_value(vy - dy);
+            }
+        });
+        let this = self.this.clone();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(viewer) = this.upgrade() {
+                viewer.state.borrow_mut().drag_start = None;
+            }
+        });
+        self.picture.add_controller(drag);
 
         let click = gtk::GestureClick::new();
         let toggle = self.with(Viewer::toggle_fullscreen);
@@ -259,22 +300,21 @@ impl Viewer {
         });
         controls.add_controller(controls_motion);
 
+        // Refit when the window is resized, not on every child size tweak.
         let this = self.this.clone();
-        self.scrolled.connect_notify_local(Some("default-width"), move |_, _| {
+        self.window.connect_default_width_notify(move |_| {
             if let Some(viewer) = this.upgrade() {
-                viewer.relayout();
+                if viewer.state.borrow().fit {
+                    viewer.relayout();
+                }
             }
         });
         let this = self.this.clone();
         self.window.connect_default_height_notify(move |_| {
             if let Some(viewer) = this.upgrade() {
-                viewer.relayout();
-            }
-        });
-        let this = self.this.clone();
-        self.scrolled.connect_map(move |_| {
-            if let Some(viewer) = this.upgrade() {
-                viewer.relayout();
+                if viewer.state.borrow().fit {
+                    viewer.relayout();
+                }
             }
         });
     }
@@ -296,33 +336,48 @@ impl Viewer {
         (width, height)
     }
 
-    fn fit_zoom(&self) -> f64 {
-        let Some((iw, ih)) = self.image_size() else {
-            return 1.0;
+    fn relayout(&self) {
+        let (iw, ih, fit) = {
+            let state = self.state.borrow();
+            if state.busy {
+                return;
+            }
+            let Some(texture) = state.texture.as_ref() else {
+                return;
+            };
+            (texture.width() as f64, texture.height() as f64, state.fit)
         };
+        self.state.borrow_mut().busy = true;
+        let zoom = if fit {
+            let zoom = self.fit_zoom_for(iw, ih);
+            self.state.borrow_mut().zoom = zoom;
+            zoom
+        } else {
+            let mut state = self.state.borrow_mut();
+            state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+            state.zoom
+        };
+        let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
+        let (w, h) = (w.max(1), h.max(1));
+        if self.picture.width_request() != w || self.picture.height_request() != h {
+            self.picture.set_size_request(w, h);
+        }
+        let label = format!("{}%", (zoom * 100.0).round() as i32);
+        if self.zoom_label.label() != label {
+            self.zoom_label.set_label(&label);
+        }
+        self.state.borrow_mut().busy = false;
+    }
+
+    fn fit_zoom_for(&self, iw: f64, ih: f64) -> f64 {
         let (vw, vh) = self.view_size();
         (vw / iw).min(vh / ih).min(1.0).max(MIN_ZOOM)
     }
 
-    fn relayout(&self) {
-        let Some((iw, ih)) = self.image_size() else {
-            return;
-        };
-        let mut state = self.state.borrow_mut();
-        if state.fit {
-            drop(state);
-            let zoom = self.fit_zoom();
-            self.state.borrow_mut().zoom = zoom;
-        } else {
-            state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-        }
-        let zoom = self.state.borrow().zoom;
-        let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
-        self.picture.set_size_request(w.max(1), h.max(1));
-        self.zoom_label.set_label(&format!("{}%", (zoom * 100.0).round() as i32));
-    }
-
     fn zoom_by(&self, factor: f64) {
+        if self.state.borrow().busy {
+            return;
+        }
         {
             let mut state = self.state.borrow_mut();
             if state.fit {

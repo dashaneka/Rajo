@@ -22,7 +22,8 @@ Rajo does one thing: shows your images and gets out of the way. Built with Rust,
 | Key | Does |
 |---|---|
 | `←` `→` or `Space` | Previous / next |
-| `+` `-` or scroll | Zoom |
+| `+` `-` or `Ctrl`+scroll | Zoom |
+| Drag | Pan when zoomed in |
 | `0` | Fit to window |
 | `1` | Actual size |
 | `F` or double-click | Fullscreen |
