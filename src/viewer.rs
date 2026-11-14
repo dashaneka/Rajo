@@ -21,6 +21,8 @@ pub struct Viewer {
     window: adw::ApplicationWindow,
     overlay: gtk::Overlay,
     scrolled: gtk::ScrolledWindow,
+    /// Exact pixel size of the zoomed image; the scrolled window sizes to this.
+    canvas: gtk::Box,
     picture: gtk::Picture,
     header_revealer: gtk::Revealer,
     controls_revealer: gtk::Revealer,
@@ -57,12 +59,20 @@ impl Viewer {
 
         let picture = gtk::Picture::builder()
             .can_shrink(true)
-            .content_fit(gtk::ContentFit::Contain)
+            .content_fit(gtk::ContentFit::Fill)
             .hexpand(true)
             .vexpand(true)
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::Fill)
             .build();
+
+        // Zoom changes this box's size request; Picture just fills it.
+        // GtkPicture alone keeps the file's full pixel size as its natural
+        // size, so +/- only moved the percentage label before.
+        let canvas = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        canvas.set_halign(gtk::Align::Center);
+        canvas.set_valign(gtk::Align::Center);
+        canvas.append(&picture);
 
         let scrolled = gtk::ScrolledWindow::builder()
             .hexpand(true)
@@ -70,7 +80,7 @@ impl Viewer {
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .kinetic_scrolling(true)
-            .child(&picture)
+            .child(&canvas)
             .build();
         scrolled.add_css_class("rajo-canvas");
 
@@ -128,6 +138,7 @@ impl Viewer {
             window: window.clone(),
             overlay,
             scrolled,
+            canvas,
             picture,
             header_revealer,
             controls_revealer,
@@ -355,29 +366,18 @@ impl Viewer {
         let zoom = if fit {
             let zoom = self.fit_zoom_for(iw, ih);
             self.state.borrow_mut().zoom = zoom;
-            // Fill the window and let GTK letterbox the picture.
-            self.picture.set_can_shrink(true);
-            self.picture.set_hexpand(true);
-            self.picture.set_vexpand(true);
-            self.picture.set_content_fit(gtk::ContentFit::Contain);
-            self.picture.set_size_request(-1, -1);
             zoom
         } else {
             let mut state = self.state.borrow_mut();
             state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-            let zoom = state.zoom;
-            drop(state);
-            let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
-            let (w, h) = (w.max(1), h.max(1));
-            self.picture.set_can_shrink(false);
-            self.picture.set_hexpand(false);
-            self.picture.set_vexpand(false);
-            self.picture.set_content_fit(gtk::ContentFit::Fill);
-            if self.picture.width_request() != w || self.picture.height_request() != h {
-                self.picture.set_size_request(w, h);
-            }
-            zoom
+            state.zoom
         };
+        let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
+        let (w, h) = (w.max(1), h.max(1));
+        if self.canvas.width_request() != w || self.canvas.height_request() != h {
+            self.canvas.set_size_request(w, h);
+            self.canvas.queue_resize();
+        }
         let label = format!("{}%", (zoom * 100.0).round() as i32);
         if self.zoom_label.label() != label {
             self.zoom_label.set_label(&label);
