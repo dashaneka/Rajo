@@ -1,0 +1,15 @@
+.rajo-canvas {
+  background-color: black;
+}
+
+headerbar.rajo-header {
+  background: linear-gradient(to bottom, alpha(black, 0.6), transparent);
+  border-bottom: none;
+  box-shadow: none;
+  color: white;
+}
+
+.rajo-controls {
+  border-radius: 16px;
+  padding: 4px 8px;
+}
