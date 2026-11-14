@@ -56,8 +56,12 @@ impl Viewer {
         recent::add(&file.uri());
 
         let picture = gtk::Picture::builder()
-            .can_shrink(false)
-            .content_fit(gtk::ContentFit::Fill)
+            .can_shrink(true)
+            .content_fit(gtk::ContentFit::Contain)
+            .hexpand(true)
+            .vexpand(true)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
             .build();
 
         let scrolled = gtk::ScrolledWindow::builder()
@@ -351,17 +355,29 @@ impl Viewer {
         let zoom = if fit {
             let zoom = self.fit_zoom_for(iw, ih);
             self.state.borrow_mut().zoom = zoom;
+            // Fill the window and let GTK letterbox the picture.
+            self.picture.set_can_shrink(true);
+            self.picture.set_hexpand(true);
+            self.picture.set_vexpand(true);
+            self.picture.set_content_fit(gtk::ContentFit::Contain);
+            self.picture.set_size_request(-1, -1);
             zoom
         } else {
             let mut state = self.state.borrow_mut();
             state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-            state.zoom
+            let zoom = state.zoom;
+            drop(state);
+            let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
+            let (w, h) = (w.max(1), h.max(1));
+            self.picture.set_can_shrink(false);
+            self.picture.set_hexpand(false);
+            self.picture.set_vexpand(false);
+            self.picture.set_content_fit(gtk::ContentFit::Fill);
+            if self.picture.width_request() != w || self.picture.height_request() != h {
+                self.picture.set_size_request(w, h);
+            }
+            zoom
         };
-        let (w, h) = ((iw * zoom).round() as i32, (ih * zoom).round() as i32);
-        let (w, h) = (w.max(1), h.max(1));
-        if self.picture.width_request() != w || self.picture.height_request() != h {
-            self.picture.set_size_request(w, h);
-        }
         let label = format!("{}%", (zoom * 100.0).round() as i32);
         if self.zoom_label.label() != label {
             self.zoom_label.set_label(&label);
