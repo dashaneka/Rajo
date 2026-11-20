@@ -1,6 +1,11 @@
+mod canvas;
 mod folder;
+mod loading;
 mod recent;
+#[cfg(test)]
+mod test_support;
 mod viewer;
+mod viewport;
 mod window;
 
 use adw::prelude::*;
@@ -8,7 +13,7 @@ use gtk::{gdk, gio, glib};
 
 pub const APP_ID: &str = "io.github.rajnish.Rajo";
 
-fn main() -> glib::ExitCode {
+fn application() -> adw::Application {
     let app = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE)
@@ -37,6 +42,11 @@ fn main() -> glib::ExitCode {
 
     app.connect_activate(|app| window::new_window(app, None));
 
+    app
+}
+
+fn main() -> glib::ExitCode {
+    let app = application();
     const SIGINT: i32 = 2;
     const SIGTERM: i32 = 15;
     for signal in [SIGINT, SIGTERM] {
@@ -48,7 +58,11 @@ fn main() -> glib::ExitCode {
                     app.quit();
                 }
                 for window in windows {
-                    window.close();
+                    if window.is_visible() {
+                        window.close();
+                    } else {
+                        window.destroy();
+                    }
                 }
             }
             glib::ControlFlow::Continue

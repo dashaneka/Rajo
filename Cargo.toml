@@ -11,6 +11,7 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
 glib-unix = "0.22"
 
 [profile.release]
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
